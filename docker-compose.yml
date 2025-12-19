@@ -1,0 +1,104 @@
+version: '3.8'
+
+services:
+  # TimescaleDB
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: intellica_timescaledb
+    environment:
+      POSTGRES_DB: intellica
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-admin123}
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescale_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - intellica_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U admin -d intellica"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: intellica_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - intellica_network
+    command: redis-server --appendonly yes
+
+  # RabbitMQ
+  rabbitmq:
+    image: rabbitmq:3.12-management
+    container_name: intellica_rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"
+      - "1883:1883"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - intellica_network
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: intellica_backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql://admin:${DB_PASSWORD:-admin123}@timescaledb:5432/intellica
+      REDIS_URL: redis://redis:6379
+      RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
+    depends_on:
+      - timescaledb
+      - redis
+      - rabbitmq
+    volumes:
+      - ./backend:/app
+      - ./ml_models:/app/models
+    networks:
+      - intellica_network
+    restart: unless-stopped
+
+  # Frontend
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: intellica_frontend
+    ports:
+      - "3000:3000"
+    environment:
+      VITE_API_URL: http://localhost:8000
+      VITE_WS_URL: ws://localhost:8000
+    depends_on:
+      - backend
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    networks:
+      - intellica_network
+    restart: unless-stopped
+
+volumes:
+  timescale_data:
+  redis_data:
+  rabbitmq_data:
+
+networks:
+  intellica_network:
+    driver: bridge
